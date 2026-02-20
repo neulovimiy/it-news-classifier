@@ -105,6 +105,7 @@ class App(ctk.CTk):
             # Выводим проценты только если тема определена уверенно
             self.result_text.configure(text=f"{category} ({confidence * 100:.1f}%)", text_color="#27ae60")
 
+
 if __name__ == "__main__":
     app = App()
     app.mainloop()
