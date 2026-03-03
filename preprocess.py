@@ -1,47 +1,65 @@
 import pandas as pd
 import re
+import pymorphy3
+import nltk
+from nltk.corpus import stopwords
+from tqdm import tqdm
 
-# Загружаем твой основной датасет
-df = pd.read_csv('it_news_perfect.csv')
+# 1. Инициализация
+print(">>> Загрузка инструментов для обработки текста...")
+nltk.download('stopwords')
+stop_words = set(stopwords.words('russian'))
+morph = pymorphy3.MorphAnalyzer()
 
-# Самые жесткие маркеры для каждой темы
-gold_keywords = {
-    'Информационная безопасность': ['взлом', 'уязвимость', 'хакер', 'атака', 'безопасность', 'шифрование', 'антивирус',
-                                    'фишинг', 'злоумышленник', 'инцидент'],
-    'Искусственный интеллект': ['нейросеть', 'искусственный интеллект', ' ai ', ' gpt ', 'обучение модели',
-                                'машинное обучение', 'генеративный', 'llm', 'алгоритм'],
-    'Разработка ПО': ['программирование', 'код ', 'разработчик', 'тестирование', 'репозиторий', 'библиотека',
-                      'фреймворк', 'git ', 'база данных', 'бэкенд'],
-    'Мобильные технологии и гаджеты': ['смартфон', 'экран', 'аккумулятор', 'камера', 'процессор', ' iphone ',
-                                       ' android ', 'телефон', 'гаджет', 'дисплей']
+# Ключевые слова для выбора "элиты" (1000 лучших из 3000)
+keywords = {
+    'Информационная безопасность': ['взлом', 'уязвимость', 'хакер', 'атака', 'безопасность', 'шифрование', 'фишинг', 'злоумышленник', 'инцидент', 'вредонос', 'защита', 'вирус'],
+    'Искусственный интеллект': ['нейросеть', 'искусственный интеллект', ' ai ', ' gpt ', 'обучение', 'машинное', 'генеративный', 'llm', 'алгоритм', 'интеллект', 'модель'],
+    'Разработка ПО': ['программирование', 'код ', 'разработчик', 'тестирование', 'репозиторий', 'библиотека', 'фреймворк', 'git ', 'база данных', 'бэкенд', 'фронтенд', 'webdev'],
+    'Мобильные технологии и гаджеты': ['смартфон', 'экран', 'аккумулятор', 'камера', 'процессор', ' iphone ', ' android ', 'телефон', 'гаджет', 'дисплей', 'девайс']
 }
 
+def clean_and_lemma(text):
+    # Очистка: оставляем только буквы
+    text = re.sub(r'[^а-яА-ЯёЁa-zA-Z\s]', ' ', str(text).lower())
+    words = text.split()
+    # Лемматизация и удаление стоп-слов
+    res = [morph.parse(w)[0].normal_form for w in words if w not in stop_words and len(w) > 2]
+    return " ".join(res)
 
-def is_gold(row):
-    text = str(row['text']).lower()
-    label = row['label']
+def get_relevance_score(text, label):
+    text = str(text).lower()
+    return sum(text.count(word) for word in keywords[label])
 
-    # 1. Проверяем наличие сильных маркеров СВОЕЙ темы
-    has_own_marker = any(word in text for word in gold_keywords[label])
+# 2. Загрузка собранной базы
+print(">>> Чтение базы данных (12.000 статей)...")
+df = pd.read_csv('mega_raw_final_12k.csv')
 
-    # 2. Проверяем отсутствие маркеров ДРУГИХ тем (исключаем путаницу)
-    has_other_marker = False
-    for other_label, words in gold_keywords.items():
-        if other_label != label:
-            if any(word in text for word in words):
-                has_other_marker = True
-                break
+# 3. Отбор лучших
+print(">>> Оценка релевантности (выбираем 1000 лучших для каждой темы)...")
+df['score'] = df.apply(lambda x: get_relevance_score(x['text'], x['label']), axis=1)
 
-    # Оставляем только "чистые" примеры без примеси других тем
-    return has_own_marker and not has_other_marker
+# Выбираем ровно по 1000 лучших в каждой категории
+df_top = df.sort_values(['label', 'score'], ascending=[True, False]).groupby('label').head(1000)
 
+# 4. Лемматизация
+print(">>> Запуск лемматизации (Пункт 3 твоего ТЗ). Это займет время...")
+tqdm.pandas(desc="Обработка")
+df_top['text'] = df_top['text'].progress_apply(clean_and_lemma)
 
-print(f"Строк до фильтрации: {len(df)}")
-df_gold = df[df.apply(is_gold, axis=1)]
+# Финальная чистка от дублей, которые могли появиться после лемматизации
+df_final = df_top.drop_duplicates(subset=['text']).dropna()
 
-# Оставляем по 300 лучших строк на каждый класс (всего 1200)
-df_final = df_gold.groupby('label').head(300).reset_index(drop=True)
+# Выравниваем до минимального (чтобы точно было поровну)
+min_size = df_final['label'].value_counts().min()
+df_final = df_final.groupby('label').head(min_size)
 
-df_final.to_csv('gold_it_news.csv', index=False, encoding='utf-8-sig')
-print(f"Золотой датасет готов! Всего строк: {len(df_final)}")
+# Сохранение финального файла для Colab
+df_final.to_csv('gold_final_dataset_4k.csv', index=False, encoding='utf-8-sig')
+
+print("\n" + "="*50)
+print("ПОДГОТОВКА ЗАВЕРШЕНА!")
+print(f"Создан файл: gold_final_dataset_4k.csv")
+print(f"Всего строк для обучения: {len(df_final)}")
 print(df_final['label'].value_counts())
+print("="*50)
